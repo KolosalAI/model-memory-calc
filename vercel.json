@@ -1,5 +1,12 @@
 {
+  "version": 2,
+  "public": true,
+  "builds": [
+    { "src": "example/**/*", "use": "@vercel/static" },
+    { "src": "api/proxy.ts", "use": "@vercel/edge" }
+  ],
   "routes": [
-    { "src": "/api/proxy", "dest": "api/proxy.ts" }
+    { "src": "/api/proxy", "dest": "api/proxy.ts" },
+    { "src": "/(.*)", "dest": "/example/$1" }
   ]
 }
