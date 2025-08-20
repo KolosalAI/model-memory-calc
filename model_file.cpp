@@ -221,11 +221,13 @@ bool ModelFileUtils::updateAllAsyncMemoryUsage(std::vector<ModelFile>& modelFile
 #endif
 
 // ---------- Model size estimate from params + quant ----------
-size_t ModelFileUtils::estimateModelSize(const GGUFModelParams& params, const std::string& quantType) {
+size_t ModelFileUtils::estimateModelSize(const GGUFModelParams& params,
+                                         const std::string& quantType) {
     // Very rough estimate based on your mapping
-    uint64_t “params-ish” = static_cast<uint64_t>(params.hidden_size) *
-                            static_cast<uint64_t>(params.hidden_layers) *
-                            static_cast<uint64_t>(params.attention_heads) * 1000ull;
+    uint64_t approx_params =
+        static_cast<uint64_t>(params.hidden_size) *
+        static_cast<uint64_t>(params.hidden_layers) *
+        static_cast<uint64_t>(params.attention_heads) * 1000ull;
 
     static const std::unordered_map<std::string, float> quantBits = {
         {"F32",32.0f},{"F16",16.0f},{"Q8_0",8.5f},{"Q8_K_XL",8.5f},
@@ -243,11 +245,10 @@ size_t ModelFileUtils::estimateModelSize(const GGUFModelParams& params, const st
     };
 
     float bpp = 16.0f;
-    auto it = quantBits.find(quantType);
-    if (it != quantBits.end()) bpp = it->second;
+    if (auto it = quantBits.find(quantType); it != quantBits.end()) bpp = it->second;
 
-    long double bytes = static_cast<long double>(“params-ish”) * (bpp / 8.0L);
-    return static_cast<size_t>(bytes / 1'000'000.0L);
+    long double bytes = static_cast<long double>(approx_params) * (bpp / 8.0L);
+    return static_cast<size_t>(bytes / 1'000'000.0L); // decimal MB
 }
 
 // ---------- Formatting ----------
@@ -343,7 +344,7 @@ emscripten::val calcMemoryFromUrl(const std::string& modelId,
     mf.modelId = modelId;
     mf.filename = filename;
     mf.downloadUrl = url;
-    mf.quant = detectQuantization(filename);
+    mf.quant = ModelFileUtils::detectQuantization(filename); // << fix
     mf.memoryUsage = ModelFileUtils::calculateMemoryUsage(mf, contextSize);
     return toJS(mf.memoryUsage);
 }
@@ -354,11 +355,12 @@ emscripten::val calcMemoryFromFile(const std::string& modelId,
                                    int contextSize) {
     ModelFile mf;
     mf.modelId = modelId;
-    mf.filename = path; // path in MEMFS
-    mf.quant = detectQuantization(filename);
+    mf.filename = path; // MEMFS path
+    mf.quant = ModelFileUtils::detectQuantization(filename); // << fix
     mf.memoryUsage = ModelFileUtils::calculateMemoryUsage(mf, contextSize);
     return toJS(mf.memoryUsage);
 }
+
 
 EMSCRIPTEN_BINDINGS(model_file_bindings) {
     emscripten::function("calcMemoryFromUrl",  &calcMemoryFromUrl);
