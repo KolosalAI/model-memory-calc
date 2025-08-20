@@ -7,29 +7,35 @@
 <style>
   :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; }
   body { margin: 24px; }
-  .card { max-width: 860px; padding: 16px 20px; border: 1px solid #e5e7eb; border-radius: 12px; }
+  .card { max-width: 920px; padding: 16px 20px; border: 1px solid #e5e7eb; border-radius: 12px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   input[type="url"] { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
   input[type="number"] { width: 120px; padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
   button { padding: 12px 16px; border: 0; border-radius: 10px; background: black; color: white; font-weight: 600; cursor: pointer; }
   button[disabled] { opacity: .5; cursor: default; }
+  label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #374151; }
   .muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
   .result { white-space: pre-wrap; background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 10px; margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .ok { color: #16a34a; }
   .err { color: #dc2626; }
+  .hint { font-size: 12px; color: #4b5563; }
+  code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
 </style>
 </head>
 <body>
   <h1>GGUF Memory Checker</h1>
   <div class="card">
     <div class="row" style="margin-bottom:10px;">
-      <input id="url" type="url" placeholder="Paste .gguf URL (https://.../model.Q4_K_M.gguf)" />
+      <input id="url" type="url" placeholder="Paste .gguf URL (e.g., https://huggingface.co/.../resolve/main/model.Q4_K_M.gguf)" />
       <input id="ctx" type="number" min="1" step="1" value="4096" title="Context size" />
       <button id="check">Check</button>
     </div>
+    <div class="row" style="gap:14px; margin-bottom:8px;">
+      <label><input id="useProxy" type="checkbox" checked> Use Vercel proxy for huggingface.co</label>
+      <span class="hint">Set your proxy base in the script below.</span>
+    </div>
     <div class="muted">
-      Requires CORS and preferably <code>Content-Length</code> and <code>Accept-Ranges: bytes</code> on the server.
-      If HEAD is blocked, it may fall back and still work.
+      For Hugging Face links, browsers need CORS + <code>Accept-Ranges: bytes</code>. The proxy adds CORS and forwards range requests.
     </div>
     <div id="status" class="muted"></div>
     <div id="result" class="result" style="display:none;"></div>
@@ -37,7 +43,11 @@
 
   <script src="gguf_reader.js"></script>
   <script>
-    let ModulePromise = window.createGGUF(); // from -sMODULARIZE=1 -sEXPORT_NAME=createGGUF
+    // 👉 Set this to your deployed Vercel function (Edge) base:
+    // Example: const PROXY = "https://your-app.vercel.app/api/proxy?u=";
+    const PROXY = "https://your-app.vercel.app/api/proxy?u=";
+
+    const ModulePromise = window.createGGUF(); // from -sMODULARIZE=1 -sEXPORT_NAME=createGGUF
 
     function setStatus(msg, cls="") {
       const el = document.getElementById('status');
@@ -54,14 +64,28 @@
       el.style.display = 'none';
       el.textContent = '';
     }
+    function normalizeForProxy(rawUrl, useProxy) {
+      try {
+        const u = new URL(rawUrl);
+        const isHF = u.hostname.endsWith("huggingface.co");
+        // For Vercel proxy, we need ?u=<encoded_url>
+        if (useProxy && isHF) {
+          return PROXY + encodeURIComponent(rawUrl);
+        }
+        return rawUrl;
+      } catch {
+        return rawUrl;
+      }
+    }
 
     document.getElementById('check').addEventListener('click', async () => {
       const btn = document.getElementById('check');
-      const url = document.getElementById('url').value.trim();
+      const rawUrl = document.getElementById('url').value.trim();
       const ctx = parseInt(document.getElementById('ctx').value, 10) || 4096;
+      const useProxy = document.getElementById('useProxy').checked;
 
       clearResult();
-      if (!url || !/^https?:\/\//i.test(url)) {
+      if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
         setStatus('Please paste a valid http(s) URL to a .gguf file.', 'err');
         return;
       }
@@ -71,16 +95,19 @@
       try {
         const Module = await ModulePromise;
 
+        // Use filename part (original URL) for quant detection
+        const filename = (rawUrl.split('/').pop() || 'model.gguf');
+        const usedUrl = normalizeForProxy(rawUrl, useProxy);
+
         setStatus('Computing memory usage…');
-        // Use filename part for quant detection
-        const fn = url.split('/').pop() || 'model.gguf';
-        // Synchronous thanks to ASYNCIFY path in C++
-        const res = Module.calcMemoryFromUrl('user/model', fn, url, ctx);
+        // Synchronous thanks to ASYNCIFY in the C++ build
+        const res = Module.calcMemoryFromUrl('user/model', filename, usedUrl, ctx);
 
         if (res && res.hasEstimate) {
           setStatus('Success.', 'ok');
           showResult({
-            url,
+            source: rawUrl,
+            usedUrl,
             contextSize: ctx,
             modelSizeMB: res.modelSizeMB,
             kvCacheMB: res.kvCacheMB,
@@ -88,7 +115,10 @@
             display: res.displayString
           });
         } else {
-          setStatus('Could not estimate (missing headers or blocked).', 'err');
+          const hint = useProxy
+            ? 'Check your PROXY base or CORS on the proxy.'
+            : 'Enable "Use Vercel proxy" for huggingface.co links.';
+          setStatus('Could not estimate (blocked headers or no Range). ' + hint, 'err');
           showResult(res || 'No result');
         }
       } catch (e) {
@@ -100,4 +130,3 @@
   </script>
 </body>
 </html>
-
