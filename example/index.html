@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GGUF Memory Checker</title>
+<style>
+  :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; }
+  body { margin: 24px; }
+  .card { max-width: 860px; padding: 16px 20px; border: 1px solid #e5e7eb; border-radius: 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type="url"] { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
+  input[type="number"] { width: 120px; padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
+  button { padding: 12px 16px; border: 0; border-radius: 10px; background: black; color: white; font-weight: 600; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  .muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
+  .result { white-space: pre-wrap; background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 10px; margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .ok { color: #16a34a; }
+  .err { color: #dc2626; }
+</style>
+</head>
+<body>
+  <h1>GGUF Memory Checker</h1>
+  <div class="card">
+    <div class="row" style="margin-bottom:10px;">
+      <input id="url" type="url" placeholder="Paste .gguf URL (https://.../model.Q4_K_M.gguf)" />
+      <input id="ctx" type="number" min="1" step="1" value="4096" title="Context size" />
+      <button id="check">Check</button>
+    </div>
+    <div class="muted">
+      Requires CORS and preferably <code>Content-Length</code> and <code>Accept-Ranges: bytes</code> on the server.
+      If HEAD is blocked, it may fall back and still work.
+    </div>
+    <div id="status" class="muted"></div>
+    <div id="result" class="result" style="display:none;"></div>
+  </div>
+
+  <script src="gguf_reader.js"></script>
+  <script>
+    let ModulePromise = window.createGGUF(); // from -sMODULARIZE=1 -sEXPORT_NAME=createGGUF
+
+    function setStatus(msg, cls="") {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'muted ' + cls;
+    }
+    function showResult(obj) {
+      const el = document.getElementById('result');
+      el.style.display = 'block';
+      el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+    }
+    function clearResult() {
+      const el = document.getElementById('result');
+      el.style.display = 'none';
+      el.textContent = '';
+    }
+
+    document.getElementById('check').addEventListener('click', async () => {
+      const btn = document.getElementById('check');
+      const url = document.getElementById('url').value.trim();
+      const ctx = parseInt(document.getElementById('ctx').value, 10) || 4096;
+
+      clearResult();
+      if (!url || !/^https?:\/\//i.test(url)) {
+        setStatus('Please paste a valid http(s) URL to a .gguf file.', 'err');
+        return;
+      }
+
+      setStatus('Loading WebAssembly…');
+      btn.disabled = true;
+      try {
+        const Module = await ModulePromise;
+
+        setStatus('Computing memory usage…');
+        // Use filename part for quant detection
+        const fn = url.split('/').pop() || 'model.gguf';
+        // Synchronous thanks to ASYNCIFY path in C++
+        const res = Module.calcMemoryFromUrl('user/model', fn, url, ctx);
+
+        if (res && res.hasEstimate) {
+          setStatus('Success.', 'ok');
+          showResult({
+            url,
+            contextSize: ctx,
+            modelSizeMB: res.modelSizeMB,
+            kvCacheMB: res.kvCacheMB,
+            totalRequiredMB: res.totalRequiredMB,
+            display: res.displayString
+          });
+        } else {
+          setStatus('Could not estimate (missing headers or blocked).', 'err');
+          showResult(res || 'No result');
+        }
+      } catch (e) {
+        setStatus('Error while loading/running: ' + (e?.message || e), 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+
