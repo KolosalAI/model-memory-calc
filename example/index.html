@@ -1,132 +1,438 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>GGUF Memory Checker</title>
-<style>
-  :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; }
-  body { margin: 24px; }
-  .card { max-width: 920px; padding: 16px 20px; border: 1px solid #e5e7eb; border-radius: 12px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input[type="url"] { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
-  input[type="number"] { width: 120px; padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 14px; }
-  button { padding: 12px 16px; border: 0; border-radius: 10px; background: black; color: white; font-weight: 600; cursor: pointer; }
-  button[disabled] { opacity: .5; cursor: default; }
-  label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #374151; }
-  .muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
-  .result { white-space: pre-wrap; background: #0b1020; color: #e5e7eb; padding: 12px; border-radius: 10px; margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .ok { color: #16a34a; }
-  .err { color: #dc2626; }
-  .hint { font-size: 12px; color: #4b5563; }
-  code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GGUF Metadata Reader (Browser)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    .card { border: 1px solid #8883; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+    label { display: block; margin: .4rem 0 .2rem; font-weight: 600; }
+    input[type="text"] { width: 100%; padding: .5rem; }
+    button { padding: .5rem .9rem; margin-right: .5rem; }
+    .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .grow { flex: 1 1 auto; }
+    pre { background: #0000000d; padding: .75rem; border-radius: 8px; overflow: auto; max-height: 40vh; }
+    .muted { opacity: .8; font-size: .9rem; }
+    .ok { color: #0a7; }
+    .err { color: #d33; }
+    .kv { display: grid; grid-template-columns: max-content 1fr; gap: .25rem .75rem; }
+    .kv div:nth-child(odd) { font-weight: 600; }
+  </style>
 </head>
 <body>
-  <h1>GGUF Memory Checker</h1>
+  <h1>GGUF Metadata Reader (Static Site)</h1>
   <div class="card">
-    <div class="row" style="margin-bottom:10px;">
-      <input id="url" type="url" placeholder="Paste .gguf URL (e.g., https://huggingface.co/.../resolve/main/model.Q4_K_M.gguf)" />
-      <input id="ctx" type="number" min="1" step="1" value="4096" title="Context size" />
-      <button id="check">Check</button>
+    <div class="row">
+      <div class="grow">
+        <label for="url">GGUF URL</label>
+        <input id="url" type="text" value="https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF/resolve/main/Qwen3-30B-A3B-Instruct-2507-UD-Q4_K_XL.gguf" />
+      </div>
     </div>
-    <div class="row" style="gap:14px; margin-bottom:8px;">
-      <label><input id="useProxy" type="checkbox" checked> Use Vercel proxy for huggingface.co</label>
-      <span class="hint">Set your proxy base in the script below.</span>
+    <div class="row" style="margin-top:.5rem">
+      <div>
+        <label for="file">Or choose a local GGUF file</label>
+        <input id="file" type="file" accept=".gguf" />
+      </div>
+      <div>
+        <label for="ctx">Context size (tokens)</label>
+        <input id="ctx" type="number" min="1" step="1" value="4096" style="width: 8rem;" />
+      </div>
+      <label><input type="checkbox" id="verbose" /> Verbose</label>
+      <button id="btnUrl">Read URL</button>
+      <button id="btnFile">Read File</button>
     </div>
-    <div class="muted">
-      For Hugging Face links, browsers need CORS + <code>Accept-Ranges: bytes</code>. The proxy adds CORS and forwards range requests.
-    </div>
-    <div id="status" class="muted"></div>
-    <div id="result" class="result" style="display:none;"></div>
+    <div class="muted" style="margin-top:.5rem">Tip: Many hosts (like Hugging Face) support HTTP Range requests needed to avoid downloading the whole file.</div>
   </div>
 
-  <script src="gguf_reader.js"></script>
+  <div class="card">
+    <h2 style="margin-top:0">Result</h2>
+    <div id="result" class="kv"></div>
+    <pre id="log"></pre>
+  </div>
+
   <script>
-    // 👉 Set this to your deployed Vercel function (Edge) base:
-    // Example: const PROXY = "https://your-app.vercel.app/api/proxy?u=";
-    const PROXY = "https://your-app.vercel.app/api/proxy?u=";
+    // ===== Utilities =====
+    const logEl = document.getElementById('log');
+    function log(...args) { logEl.textContent += args.join(' ') + '\n'; }
+    function clearLog() { logEl.textContent = ''; }
 
-    const ModulePromise = window.createGGUF(); // from -sMODULARIZE=1 -sEXPORT_NAME=createGGUF
+    // ===== DataSource base =====
+    class DataSource {
+      async read(buffer, size) { throw new Error('not implemented'); }
+      async seek(position) { throw new Error('not implemented'); }
+      eof() { throw new Error('not implemented'); }
+      tell() { throw new Error('not implemented'); }
+    }
 
-    function setStatus(msg, cls="") {
-      const el = document.getElementById('status');
-      el.textContent = msg;
-      el.className = 'muted ' + cls;
+    // Browser File/Blob backed DataSource
+    class BrowserFileDataSource extends DataSource {
+      constructor(file) {
+        super();
+        this.file = file; // File or Blob
+        this.position = 0;
+        this._eof = false;
+      }
+      async read(buffer, size) {
+        const end = Math.min(this.position + size, this.file.size);
+        const slice = this.file.slice(this.position, end);
+        const arr = new Uint8Array(await slice.arrayBuffer());
+        if (arr.length === 0) { this._eof = true; return false; }
+        buffer.set(arr.subarray(0, size), 0);
+        this.position += arr.length;
+        return arr.length === size;
+      }
+      async seek(position) { this.position = position; this._eof = false; return true; }
+      eof() { return this._eof; }
+      tell() { return this.position; }
     }
-    function showResult(obj) {
-      const el = document.getElementById('result');
-      el.style.display = 'block';
-      el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
-    }
-    function clearResult() {
-      const el = document.getElementById('result');
-      el.style.display = 'none';
-      el.textContent = '';
-    }
-    function normalizeForProxy(rawUrl, useProxy) {
-      try {
-        const u = new URL(rawUrl);
-        const isHF = u.hostname.endsWith("huggingface.co");
-        // For Vercel proxy, we need ?u=<encoded_url>
-        if (useProxy && isHF) {
-          return PROXY + encodeURIComponent(rawUrl);
+
+    // URL DataSource with Range fetch and sliding buffer
+    const BUFFER_SIZE = 1 << 20; // 1 MiB
+    const CHUNK_SIZE = 1 << 18;  // 256 KiB per range
+    class UrlDataSource extends DataSource {
+      constructor(url, { verbose = false } = {}) {
+        super();
+        this.url = url;
+        this.verbose = verbose;
+        this.currentPos = 0;
+        this._eof = false;
+        this.abortDownload = false;
+        this.downloadedData = new Uint8Array(BUFFER_SIZE);
+        this.bufferSize = 0; // filled bytes
+        this.bufferPos = 0;  // read offset
+      }
+      async _fetchRange(start, endExclusive) {
+        if (this.abortDownload) return new Uint8Array(0);
+        const endInclusive = endExclusive - 1;
+        if (this.verbose) log(`[HTTP] GET Range: bytes=${start}-${endInclusive}`);
+        const res = await fetch(this.url, { headers: { Range: `bytes=${start}-${endInclusive}` } });
+        // Some servers reply 206 (Partial Content). 200 is also acceptable but risky if Range ignored.
+        if (!res.ok && res.status !== 206 && res.status !== 200) throw new Error(`HTTP error ${res.status}`);
+        const arr = new Uint8Array(await res.arrayBuffer());
+        if (res.status === 200 && start > 0) {
+          // Server ignored Range (dangerous for huge files). We can only slice if we already got the full body.
+          if (this.verbose) log('[HTTP] Warning: server ignored Range; received full body with 200.');
+          if (arr.length <= start) return new Uint8Array(0);
+          return arr.subarray(start, Math.min(arr.length, endExclusive));
         }
-        return rawUrl;
-      } catch {
-        return rawUrl;
+        return arr;
+      }
+      async read(buffer, size) {
+        while (this.bufferPos + size > this.bufferSize) {
+          if (this.bufferPos >= this.bufferSize) { this.bufferSize = 0; this.bufferPos = 0; }
+          if (this.bufferPos > 0 && this.bufferSize > this.bufferPos) {
+            this.downloadedData.copyWithin(0, this.bufferPos, this.bufferSize);
+            this.bufferSize -= this.bufferPos; this.bufferPos = 0;
+          }
+          const wantStart = this.currentPos + this.bufferSize;
+          const chunkEnd = wantStart + CHUNK_SIZE;
+          const neededCapacity = this.bufferSize + CHUNK_SIZE;
+          if (neededCapacity > this.downloadedData.length) {
+            const newBuf = new Uint8Array(Math.max(this.downloadedData.length * 2, neededCapacity));
+            newBuf.set(this.downloadedData.subarray(0, this.bufferSize), 0);
+            this.downloadedData = newBuf;
+          }
+          if (this.abortDownload) { this._eof = true; return false; }
+          const arr = await this._fetchRange(wantStart, chunkEnd);
+          if (arr.length === 0) { this._eof = true; return false; }
+          this.downloadedData.set(arr, this.bufferSize);
+          this.bufferSize += arr.length;
+        }
+        const copySize = Math.min(size, this.bufferSize - this.bufferPos);
+        buffer.set(this.downloadedData.subarray(this.bufferPos, this.bufferPos + copySize), 0);
+        this.bufferPos += copySize;
+        this.currentPos += copySize;
+        return copySize === size;
+      }
+      async seek(position) {
+        if (position >= this.currentPos - this.bufferPos && position < this.currentPos + (this.bufferSize - this.bufferPos)) {
+          this.bufferPos = position - (this.currentPos - this.bufferPos);
+          this.currentPos = position; return true;
+        }
+        this.bufferSize = 0; this.bufferPos = 0; this.currentPos = position; this._eof = false; return true;
+      }
+      eof() { return this._eof; }
+      tell() { return this.currentPos; }
+      setAbortFlag() { this.abortDownload = true; }
+    }
+
+    // ===== GGUF parsing =====
+    const GGUFType = Object.freeze({
+      UINT8: 0,
+      INT8: 1,
+      UINT16: 2,
+      INT16: 3,
+      UINT32: 4,
+      INT32: 5,
+      FLOAT32: 6,
+      BOOL: 7,
+      STRING: 8,
+      ARRAY: 9,
+      UINT64: 10,
+      INT64: 11,
+      FLOAT64: 12,
+      MAX_TYPE: 13,
+    });
+
+    function readUIntLE(buf, offset, byteLength) {
+      let val = 0n;
+      for (let i = 0; i < byteLength; i++) val |= BigInt(buf[offset + i]) << BigInt(8 * i);
+      return val;
+    }
+    function formatMemorySize(mb) {
+      const n = Number(mb);
+      if (n >= 1000) return (n / 1000).toFixed(1) + ' GB';
+      return n + ' MB';
+    }
+    async function readExact(source, size) { const buf = new Uint8Array(size); const ok = await source.read(buf, size); if (!ok) throw new Error('Failed to read required bytes'); return buf; }
+    async function readU32(source) { const b = await readExact(source, 4); return Number(readUIntLE(b, 0, 4)); }
+    async function readU64(source) { const b = await readExact(source, 8); return Number(readUIntLE(b, 0, 8)); }
+    async function readString(source) {
+      const len = await readU64(source);
+      if (len > 1024 * 1024) throw new Error(`String too long: ${len}`);
+      const data = len > 0 ? await readExact(source, Number(len)) : new Uint8Array();
+      return new TextDecoder().decode(data);
+    }
+    async function skipArray(source, elemType) {
+      const count = await readU64(source);
+      if (count > 1000000) throw new Error(`Array count too large: ${count}`);
+      for (let i = 0; i < Number(count); i++) await skipValue(source, elemType);
+    }
+    async function skipValue(source, type) {
+      switch (type) {
+        case GGUFType.UINT8:
+        case GGUFType.INT8:
+          await source.seek(source.tell() + 1); break;
+        case GGUFType.UINT16:
+        case GGUFType.INT16:
+          await source.seek(source.tell() + 2); break;
+        case GGUFType.UINT32:
+        case GGUFType.INT32:
+        case GGUFType.FLOAT32:
+          await source.seek(source.tell() + 4); break;
+        case GGUFType.BOOL:
+          await source.seek(source.tell() + 1); break;
+        case GGUFType.STRING: {
+          const length = await readU64(source);
+          if (length > 1024 * 1024) throw new Error(`String too long: ${length}`);
+          await source.seek(source.tell() + Number(length));
+          break;
+        }
+        case GGUFType.ARRAY: {
+          const elemTypeVal = await readU32(source);
+          if (elemTypeVal >= GGUFType.MAX_TYPE) throw new Error(`Invalid array element type: ${elemTypeVal}`);
+          await skipArray(source, elemTypeVal);
+          break;
+        }
+        case GGUFType.UINT64:
+        case GGUFType.INT64:
+        case GGUFType.FLOAT64:
+          await source.seek(source.tell() + 8); break;
+        default:
+          throw new Error(`Unknown GGUF type: ${type}`);
       }
     }
 
-    document.getElementById('check').addEventListener('click', async () => {
-      const btn = document.getElementById('check');
-      const rawUrl = document.getElementById('url').value.trim();
-      const ctx = parseInt(document.getElementById('ctx').value, 10) || 4096;
-      const useProxy = document.getElementById('useProxy').checked;
+    async function readModelParams(pathOrFile, { verbose = false } = {}) {
+      const isUrl = typeof pathOrFile === 'string';
+      const source = isUrl ? new UrlDataSource(pathOrFile, { verbose }) : new BrowserFileDataSource(pathOrFile);
 
-      clearResult();
-      if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
-        setStatus('Please paste a valid http(s) URL to a .gguf file.', 'err');
-        return;
+      const magic = await readU32(source);
+      if (magic !== 0x46554747) { if (verbose) log(`Invalid GGUF file format. Magic number: 0x${magic.toString(16)}`); return null; }
+
+      const version = await readU32(source);
+      if (version > 3) { if (verbose) log(`Unsupported GGUF version: ${version}`); return null; }
+      if (verbose) log(`GGUF version: ${version}`);
+
+      let tensorCount = 0;
+      if (version >= 1) { tensorCount = Number(await readU64(source)); if (verbose) log(`Tensor count: ${tensorCount}`); }
+
+      const metadataCount = Number(await readU64(source));
+      if (verbose) log(`Metadata count: ${metadataCount}`);
+
+      const suffixes = [
+        '.attention.head_count',
+        '.attention.head_count_kv',
+        '.block_count',
+        '.embedding_length',
+      ];
+
+      const params = {};
+      const found = { attention_heads: false, kv_heads: false, hidden_layers: false, hidden_size: false };
+
+      for (let i = 0; i < metadataCount && !source.eof(); i++) {
+        let key;
+        try { key = await readString(source); } catch (e) { throw new Error(`Failed to read key: ${e.message}`); }
+
+        const typeVal = await readU32(source);
+        if (typeVal >= GGUFType.MAX_TYPE) throw new Error(`Invalid metadata type: ${typeVal} for key: ${key}`);
+        const type = typeVal;
+        if (verbose) log(`Key: ${key}, Type: ${type}`);
+
+        const matchedSuffix = suffixes.find(s => key.endsWith(s));
+        if (matchedSuffix) {
+          if (matchedSuffix === '.attention.head_count' && (type === GGUFType.UINT32 || type === GGUFType.INT32)) {
+            const value = await readU32(source); params.attention_heads = value; found.attention_heads = true; if (verbose) log(`  Found attention_heads: ${value} (from key: ${key})`);
+          } else if (matchedSuffix === '.attention.head_count_kv' && (type === GGUFType.UINT32 || type === GGUFType.INT32)) {
+            const value = await readU32(source); params.kv_heads = value; found.kv_heads = true; if (verbose) log(`  Found kv_heads: ${value} (from key: ${key})`);
+          } else if (matchedSuffix === '.block_count' && (type === GGUFType.UINT32 || type === GGUFType.INT32)) {
+            const value = await readU32(source); params.hidden_layers = value; found.hidden_layers = true; if (verbose) log(`  Found hidden_layers: ${value} (from key: ${key})`);
+          } else if (matchedSuffix === '.embedding_length') {
+            if (type === GGUFType.UINT64 || type === GGUFType.INT64) {
+              const value = await readU64(source); params.hidden_size = value; found.hidden_size = true; if (verbose) log(`  Found hidden_size: ${value} (from key: ${key})`);
+            } else if (type === GGUFType.UINT32 || type === GGUFType.INT32) {
+              const value = await readU32(source); params.hidden_size = value; found.hidden_size = true; if (verbose) log(`  Found hidden_size: ${value} (from key: ${key})`);
+            } else { await skipValue(source, type); }
+          } else { await skipValue(source, type); }
+        } else { await skipValue(source, type); }
+
+        if (found.attention_heads && found.hidden_layers && found.hidden_size && (found.kv_heads || found.attention_heads)) {
+          if (isUrl) { source.setAbortFlag?.(); if (verbose) log('All required metadata found, aborting download'); }
+          break;
+        }
       }
 
-      setStatus('Loading WebAssembly…');
-      btn.disabled = true;
+      if (!found.kv_heads && found.attention_heads) { params.kv_heads = params.attention_heads; found.kv_heads = true; if (verbose) log(`  Using attention_heads as kv_heads: ${params.kv_heads}`); }
+
+      const allFound = found.attention_heads && found.hidden_layers && found.hidden_size;
+      if (!allFound) { if (verbose) log('Failed to find all required model parameters.'); return null; }
+      return params;
+    }
+
+    // ===== Memory usage calculation =====
+    async function getRemoteFileSize(url, { verbose = false } = {}) {
       try {
-        const Module = await ModulePromise;
-
-        // Use filename part (original URL) for quant detection
-        const filename = (rawUrl.split('/').pop() || 'model.gguf');
-        const usedUrl = normalizeForProxy(rawUrl, useProxy);
-
-        setStatus('Computing memory usage…');
-        // Synchronous thanks to ASYNCIFY in the C++ build
-        const res = Module.calcMemoryFromUrl('user/model', filename, usedUrl, ctx);
-
-        if (res && res.hasEstimate) {
-          setStatus('Success.', 'ok');
-          showResult({
-            source: rawUrl,
-            usedUrl,
-            contextSize: ctx,
-            modelSizeMB: res.modelSizeMB,
-            kvCacheMB: res.kvCacheMB,
-            totalRequiredMB: res.totalRequiredMB,
-            display: res.displayString
-          });
-        } else {
-          const hint = useProxy
-            ? 'Check your PROXY base or CORS on the proxy.'
-            : 'Enable "Use Vercel proxy" for huggingface.co links.';
-          setStatus('Could not estimate (blocked headers or no Range). ' + hint, 'err');
-          showResult(res || 'No result');
+        // Try HEAD first (no custom headers, fewer preflight issues)
+        const head = await fetch(url, { method: 'HEAD' });
+        if (head.ok) {
+          const cl = head.headers.get('content-length');
+          if (cl) {
+            const n = Number(cl);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
         }
       } catch (e) {
-        setStatus('Error while loading/running: ' + (e?.message || e), 'err');
-      } finally {
-        btn.disabled = false;
+        if (verbose) log('[HEAD error]', e.message || e);
       }
-    });
+      // Fallback: attempt Range 0-0 to read Content-Range total
+      try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (!res.ok && res.status !== 206 && res.status !== 200) return 0;
+        const cr = res.headers.get('content-range');
+        if (cr) {
+          // Example: "bytes 0-0/12345"
+          const m = cr.match(/\/(\d+)$/);
+          if (m) {
+            const n = Number(m[1]);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
+        }
+        // Some servers return 200 with full body; avoid downloading full content just to find size.
+        const cl = res.headers.get('content-length');
+        if (cl) {
+          const n = Number(cl);
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+      } catch (e) {
+        if (verbose) log('[Range 0-0 error]', e.message || e);
+      }
+      return 0;
+    }
+
+    async function calculateMemoryUsageFromUrl(url, contextSize, { verbose = false } = {}) {
+      const sizeBytes = await getRemoteFileSize(url, { verbose });
+      if (!sizeBytes) return null;
+      const params = await readModelParams(url, { verbose });
+      if (!params) return null;
+      const modelSizeMB = Math.floor(sizeBytes / 1_000_000);
+      const kvBytes = 4.0 * params.hidden_size * params.hidden_layers * contextSize;
+      const kvCacheMB = Math.floor(kvBytes / 1_000_000);
+      const totalRequiredMB = modelSizeMB + kvCacheMB;
+      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)})`;
+      return { modelSizeMB, kvCacheMB, totalRequiredMB, displayString, hasEstimate: true };
+    }
+
+    async function calculateMemoryUsageFromFile(file, contextSize, { verbose = false } = {}) {
+      const sizeBytes = file?.size || 0;
+      if (!sizeBytes) return null;
+      const params = await readModelParams(file, { verbose });
+      if (!params) return null;
+      const modelSizeMB = Math.floor(sizeBytes / 1_000_000);
+      const kvBytes = 4.0 * params.hidden_size * params.hidden_layers * contextSize;
+      const kvCacheMB = Math.floor(kvBytes / 1_000_000);
+      const totalRequiredMB = modelSizeMB + kvCacheMB;
+      const displayString = `${formatMemorySize(totalRequiredMB)} (Model: ${formatMemorySize(modelSizeMB)} + KV: ${formatMemorySize(kvCacheMB)})`;
+      return { modelSizeMB, kvCacheMB, totalRequiredMB, displayString, hasEstimate: true };
+    }
+
+    // ===== UI wiring =====
+    const btnUrl = document.getElementById('btnUrl');
+    const btnFile = document.getElementById('btnFile');
+    const inputUrl = document.getElementById('url');
+    const inputFile = document.getElementById('file');
+    const verboseEl = document.getElementById('verbose');
+    const ctxEl = document.getElementById('ctx');
+    const resultEl = document.getElementById('result');
+
+    function showParams(p) {
+      resultEl.innerHTML = '';
+      if (!p) { resultEl.textContent = 'No params.'; return; }
+      const add = (k, v) => { const kEl = document.createElement('div'); kEl.textContent = k; const vEl = document.createElement('div'); vEl.textContent = String(v); resultEl.appendChild(kEl); resultEl.appendChild(vEl); };
+      add('attention_heads', p.attention_heads);
+      add('kv_heads', p.kv_heads);
+      add('hidden_layers', p.hidden_layers);
+      add('hidden_size', p.hidden_size);
+    }
+
+    function showUsage(u) {
+      if (!u) return;
+      const add = (k, v) => { const kEl = document.createElement('div'); kEl.textContent = k; const vEl = document.createElement('div'); vEl.textContent = String(v); resultEl.appendChild(kEl); resultEl.appendChild(vEl); };
+      add('modelSizeMB', u.modelSizeMB);
+      add('kvCacheMB', u.kvCacheMB);
+      add('totalRequiredMB', u.totalRequiredMB);
+      add('display', u.displayString);
+    }
+
+    async function handleUrl() {
+      clearLog(); resultEl.textContent = 'Working...';
+      const url = inputUrl.value.trim(); const verbose = verboseEl.checked; const ctx = Math.max(1, parseInt(ctxEl.value || '4096', 10));
+      try {
+        const params = await readModelParams(url, { verbose });
+        if (!params) { resultEl.innerHTML = '<span class="err">Failed to read params.</span>'; return; }
+        const usage = await calculateMemoryUsageFromUrl(url, ctx, { verbose });
+        if (!usage) { resultEl.innerHTML = '<span class="err">Could not determine file size or compute usage (CORS/Range?).</span>'; showParams(params); return; }
+        resultEl.innerHTML = '<span class="ok">Success</span>';
+        showParams(params);
+        showUsage(usage);
+      } catch (e) {
+        log('[Error]', e.message || e);
+        resultEl.innerHTML = '<span class="err">Error: ' + (e.message || e) + '</span>';
+      }
+    }
+
+    async function handleFile() {
+      clearLog(); resultEl.textContent = 'Working...';
+      const file = inputFile.files && inputFile.files[0]; const verbose = verboseEl.checked; const ctx = Math.max(1, parseInt(ctxEl.value || '4096', 10));
+      if (!file) { resultEl.textContent = 'Choose a file first.'; return; }
+      try {
+        const params = await readModelParams(file, { verbose });
+        if (!params) { resultEl.innerHTML = '<span class="err">Failed to read params.</span>'; return; }
+        const usage = await calculateMemoryUsageFromFile(file, ctx, { verbose });
+        if (!usage) { resultEl.innerHTML = '<span class="err">Could not compute usage.</span>'; showParams(params); return; }
+        resultEl.innerHTML = '<span class="ok">Success</span>';
+        showParams(params);
+        showUsage(usage);
+      } catch (e) {
+        log('[Error]', e.message || e);
+        resultEl.innerHTML = '<span class="err">Error: ' + (e.message || e) + '</span>';
+      }
+    }
+
+    btnUrl.addEventListener('click', handleUrl);
+    btnFile.addEventListener('click', handleFile);
   </script>
 </body>
 </html>
